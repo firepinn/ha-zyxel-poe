@@ -3,26 +3,26 @@ import logging
 import aiohttp
 import math
 import re
-import async_timeout
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 import asyncio
 from random import random
 
 from homeassistant import config_entries
-from homeassistant.const import STATE_ON, STATE_OFF, CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_SCAN_INTERVAL
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.const import STATE_ON, STATE_OFF, CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_SCAN_INTERVAL, EVENT_HOMEASSISTANT_STOP
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
 
-from .const import DOMAIN, KEY_POESWITCH
+from .const import DOMAIN, KEY_POESWITCH, METHOD_POST, METHOD_GET, BRAND
 
+MAX_HTTP_RETRIES = 3
+MAX_APP_RETRIES = 2
 CONF_DEVICES = "devices"
-SCAN_INTERVAL = 30
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,14 +77,17 @@ async def async_setup_entry(hass, entry):
 
     if not name or len(name) == 0:
         name = host
-    
+
     password = entry.data[CONF_PASSWORD]
     interval = entry.data[CONF_SCAN_INTERVAL]
 
-    _LOGGER.debug(f"using {interval}s update interval")
+    _LOGGER.debug(f"Using {interval}s update interval")
     coordinator = ZyxelCoordinator(hass, name, host, password, interval)
 
     await coordinator.async_config_entry_first_refresh()
+
+    dev_reg = dr.async_get(hass)
+    await coordinator.get_system_info(dev_reg, entry)
 
     hass.data.setdefault(KEY_POESWITCH, {})[entry.entry_id] = coordinator
     for platform in FORWARD_PLATFORMS:
@@ -136,9 +139,12 @@ class ZyxelCoordinator(DataUpdateCoordinator):
 
         async def on_hass_stop(event):
             """Close connection when hass stops."""
-            await self.logout()
+            try:
+                await self.logout()
+            except:
+                pass
     
-        self.cancel = hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, on_hass_stop)
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, on_hass_stop)
 
         self.ports = {}
         self._client = async_create_clientsession(hass, cookie_jar=aiohttp.CookieJar(unsafe=True))
@@ -148,9 +154,59 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         self._host = host
         self._password = password
 
-    def __del__(self):
-        _LOGGER.info("removing shutdown hook")
-        self.cancel()
+    async def get_system_info(self, dev_reg, entry):
+        if not await self._login():
+            return False
+
+        ok, text = await self.execute(METHOD_GET, f"http://{self._host}/system_data.js")
+        if not ok:
+            return False
+
+        m = re.findall(r"sys_fmw_ver\s?=\s?'(.+)';", text)
+        if not m or len(m) < 1:
+            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            return False
+        sw_version = m[0]
+
+        m = re.findall(r"model_name\s?=\s?'(.+)';", text)
+        if not m or len(m) < 1:
+            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            return False
+        model = m[0]
+
+        m = re.findall(r"sys_MAC\s?=\s?'(.+)';", text)
+        if not m or len(m) < 1:
+            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            return False
+        mac = m[0]
+
+        m = re.findall(r"sys_dev_name\s?=\s?'(.+)';", text)
+        if not m or len(m) < 1:
+            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            return False
+        name = m[0]
+
+        self.device_info = {
+            name: name,
+            mac: mac,
+            sw_version: sw_version,
+            model: model
+        }
+
+        dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            connections={(dr.CONNECTION_NETWORK_MAC, mac)},
+            identifiers={
+                (DOMAIN, self._host)
+            },
+            manufacturer=BRAND,
+            name=name,
+            model=model,
+            sw_version=sw_version
+        )
+
+        return True
+
 
     def get_port_power(self, port):
         p = self.ports.get(port)
@@ -170,14 +226,39 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             self.ports[port] = {}
         self.ports[port]['state'] = state
 
+    async def execute(self, method, url, data=None):
+        for i in range(MAX_HTTP_RETRIES):
+            try:
+                if i != 0:
+                    _LOGGER.info(f"Retry {method} {url} ({i} out of {MAX_HTTP_RETRIES})")
+                    await asyncio.sleep(2)
+
+                if method == METHOD_GET:
+                    resp = await self._client.get(url, timeout=5)
+                else:
+                    resp = await self._client.post(url, data=data, timeout=5)
+
+                _LOGGER.debug(f"{method} {url} returned status code: {resp.status}")
+                if not resp.ok:
+                    _LOGGER.info("Failed. retrying")
+                    continue
+                text = await resp.text()
+                if not "login.cgi" in url and not "logout.html" in url and re.search(r'action="login.cgi"', text):
+                    _LOGGER.info("Login required. retrying")
+                    self._clear_login_cookie()
+                    return False, text
+
+                return True, text
+
+            except (asyncio.TimeoutError, aiohttp.ClientError) as ex:
+                _LOGGER.warn(f"Error during {method} {url}: {ex}")
+                pass
+
+        return False, None
+
     async def logout(self):
         _LOGGER.info("Logging out")
-        try:
-            url = f"http://{self._host}/logout.html"
-            await self._client.get(url)
-        except Exception as ex:
-            _LOGGER.warn(ex)
-            pass
+        await self.execute(METHOD_GET, f"http://{self._host}/logout.html")
 
     def _have_login_cookie(self):
         if 'token' in [c.key for c in self._client.cookie_jar]:
@@ -191,112 +272,107 @@ class ZyxelCoordinator(DataUpdateCoordinator):
 
     async def _login(self):
         if self._have_login_cookie():
-            return
+            _LOGGER.debug("Login token should still be valid")
+            return True
+
         _LOGGER.debug("Logging in")
 
         login_data = {
             "password": encode(self._password),
         }
 
-        url = f"http://{self._host}/login.cgi"
-        resp = await self._client.post(url, data=login_data)
-        text = await resp.text()
-        _LOGGER.debug(f"POST to {url} returned status code: {resp.status}")
-        if resp.ok and self._have_login_cookie():
+        ok, text = await self.execute(METHOD_POST, f"http://{self._host}/login.cgi", data=login_data)
+        if ok and self._have_login_cookie():
             _LOGGER.info("Logged in successfully")
-            return
-        _LOGGER.debug(f"Login failed: {text}")
-        raise UpdateFailed(f"Login failed: {text}")
+            return True
+        if "logged in already" in text:
+            _LOGGER.info("Other login session is still active")
+        else:
+            _LOGGER.warn(f"Unknown error during login: {text}")
 
-    async def change_state(self, is_retry=False):
-        if is_retry:
-            _LOGGER.warn("retry changing port state")
-        url = f"http://{self._host}/port_state_set.cgi"
-        try:
-            with async_timeout.timeout(10):
-                await self._login()
-                switches = [True if o.get("state", STATE_ON) == STATE_ON else False for _, o in self.ports.items()]
-                data = {
-                    "g_port_state": 31,
-                    "g_port_flwcl": 0,
-                    "g_port_poe": bool_list_to_int(switches),
-                    "g_port_speed0": 0,
-                    "g_port_speed1":0,
-                    "g_port_speed2":0,
-                    "g_port_speed3":0,
-                    "g_port_speed4":0
-                }
-                _LOGGER.debug(f"POST {data} to {url}")
-                resp = await self._client.post(url, data=data)
-                text = await resp.text()
-                if not resp.ok:
-                    raise UpdateFailed(f"Changing state failed: {text}")
+        _LOGGER.debug(f"Login failed")
+        return False
 
-                if re.search(r'action="login.cgi"', text):
-                    _LOGGER.info("login required. retrying")
-                    self._clear_login_cookie()
-                    if not is_retry:
-                        await self.change_state(is_retry=True)
-                else:
-                    _LOGGER.info("State change successful")
+    async def _do_change_state(self):
+        if not await self._login():
+            return False
 
-        except (asyncio.TimeoutError, aiohttp.ClientError) as ex:
-            if not is_retry:
-                await asyncio.sleep(5)
-                await self.change_state(is_retry=True)
-                pass
-            raise UpdateFailed(f"Connection error during change state: {ex}") from ex
+        switches = [True if o.get("state", STATE_ON) == STATE_ON else False for _, o in self.ports.items()]
+        data = {
+            "g_port_state": 31,
+            "g_port_flwcl": 0,
+            "g_port_poe": bool_list_to_int(switches),
+            "g_port_speed0": 0,
+            "g_port_speed1":0,
+            "g_port_speed2":0,
+            "g_port_speed3":0,
+            "g_port_speed4":0
+        }
+        ok, text = await self.execute(METHOD_POST, f"http://{self._host}/port_state_set.cgi", data=data)
+        if not ok:
+            _LOGGER.warn("Failed to change state")
+            return False
+
+        _LOGGER.debug(f"State change successful")
+        return True
+
+    async def change_state(self):
+        for i in range(MAX_APP_RETRIES):
+            if await self._do_change_state():
+                return
+            _LOGGER.info("Retry changing state")
+            if i < MAX_APP_RETRIES:
+                await asyncio.sleep(2)
+        raise UpdateFailed("Failed to change state")
 
     async def _fetch_poe_port_state(self):
-        url = f"http://{self._host}/port_state_data.js"
-        resp = await self._client.get(url)
-        text = await resp.text()
-        _LOGGER.debug(f"GET {url} returned status code: {resp.status}")
-        if not resp.ok:
-            raise UpdateFailed(f"Refresh failed: {text}")
+        if not await self._login():
+            return False
+
+        ok, text = await self.execute(METHOD_GET, f"http://{self._host}/port_state_data.js")
+        if not ok:
+            return False
 
         m = re.findall(r"portPoE\s?=\s?'(\d+)';", text)
-        if m and len(m) >= 1:
-            switches = int_to_bool_list(int(m[0]))
-            for i, val in enumerate(switches):
-                _LOGGER.debug(f"Port {i} state {val}")
-                if not self.ports.get(i):
-                    self.ports[i] = {}
-                self.ports[i]["state"] = STATE_ON if val else STATE_OFF
-        else:
-            if re.search(r'action="login.cgi"', text):
-                self._clear_login_cookie()
-            else:
-                _LOGGER.warn(f"Unexpected response received during update state: {text}")
+        if not m or len(m) < 1:
+            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            return False
+
+        switches = int_to_bool_list(int(m[0]))
+        for i, val in enumerate(switches):
+            _LOGGER.debug(f"Port {i} state {val}")
+            if not self.ports.get(i):
+                self.ports[i] = {}
+            self.ports[i]["state"] = STATE_ON if val else STATE_OFF
+
+        return True
 
     async def _fetch_poe_port_power(self):
-        url = f"http://{self._host}/poe_data.js"
-        resp = await self._client.get(url)
-        text = await resp.text()
-        _LOGGER.debug(f"GET {url} returned status code: {resp.status}")
-        if not resp.ok:
-            raise UpdateFailed(f"Refresh failed: {text}")
+        if not await self._login():
+            return False
+
+        ok, text = await self.execute(METHOD_GET, f"http://{self._host}/poe_data.js")
+        if not ok:
+            return False
 
         m = re.findall(r"port_power\s?=\s?\[([\s\d+\.,]+)\]", text)
-        if m and len(m) >= 1:
-            powers = [x.strip() for x in m[0].split(',')]
-            for i, val in enumerate(powers):
-                _LOGGER.debug(f"Port {i} power {val}W")
-                if not self.ports.get(i):
-                    self.ports[i] = {}
-                self.ports[i]["power"] = float(val)
-        else:
-            if re.search(r'action="login.cgi"', text):
-                self._clear_login_cookie()
-            else:
-                _LOGGER.warn(f"Unexpected response received during update state: {text}")
+        if not m or len(m) < 1:
+            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            return False
+
+        powers = [x.strip() for x in m[0].split(',')]
+        for i, val in enumerate(powers):
+            _LOGGER.debug(f"Port {i} power {val}W")
+            if not self.ports.get(i):
+                self.ports[i] = {}
+            self.ports[i]["power"] = float(val)
+        return True
 
     async def _async_update_data(self):
         _LOGGER.debug("Polling for updates")
-        try:
-            with async_timeout.timeout(10):
-                await self._login()
-                await self._fetch_poe_port_state()
-                await self._fetch_poe_port_power()
-        except (asyncio.TimeoutError, aiohttp.ClientError) as ex:
-            raise UpdateFailed(f"Connection error during update: {ex}") from ex
+        for _ in range(MAX_APP_RETRIES):
+            if await self._fetch_poe_port_state() and await self._fetch_poe_port_power():
+                return
+            _LOGGER.info("Retry fetching state")
+            await asyncio.sleep(2)
+        raise UpdateFailed("Failed to refresh state")

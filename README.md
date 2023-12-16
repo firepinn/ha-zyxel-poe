@@ -5,15 +5,15 @@ Because this functionality is not available via SNMP it will be performed over H
 
 ## Acknowledgements
 
-This plugin is inspired by https://github.com/lukas-hetzenecker/home-assistant-zyxel-poe which should work for some other models
+This plugin is inspired by https://github.com/lukas-hetzenecker/home-assistant-zyxel-poe which should work for some other models not supported by this plugin
 
 ## Compatibility
 
 Tested with: 
 
-- ZyXEL GS1200-5HP
+- ZyXEL GS1200-5HP v2
 
-Should be compatible with similar models like the ZyXEL GS1200-8HP.
+Should be compatible with similar models like the ZyXEL GS1200-8HP v2.
 
 ## What works now?
 

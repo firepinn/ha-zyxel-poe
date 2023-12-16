@@ -1,0 +1,18 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Connect to your Zyxel GS1200-5/8 POE switch",
+                "data": {
+                    "host": "Host",
+                    "password": "Password",
+                    "name": "Name",
+                    "scan_interval": "Update interval"
+                }
+            }
+        },
+        "abort": {
+            "single_instance_allowed": "This switch was already added. You can only add it once."
+        }
+    }
+}

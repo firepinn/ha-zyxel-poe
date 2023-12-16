@@ -1,0 +1,15 @@
+{
+  "domain": "zyxel_switch_poe",
+  "name": "ZyXEL POE",
+  "documentation": "https://github.com/firepinn/ha-zyxel-poe",
+  "issue_tracker": "https://github.comfirepinn/ha-zyxel-poe/issues",
+  "dependencies": [],
+  "codeowners": [
+    "@firepinn"
+  ],
+  "requirements": [],
+  "zeroconf": [
+  ],
+  "version": "0.1",
+  "iot_class": "local_polling"
+}

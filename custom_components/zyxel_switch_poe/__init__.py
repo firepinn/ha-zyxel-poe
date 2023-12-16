@@ -187,7 +187,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
 
     def _clear_login_cookie(self):
         _LOGGER.debug("Login cookie no longer valid. Clearing cookies")
-        self._client._client.cookie_jar.clear()
+        self._client.cookie_jar.clear()
 
     async def _login(self):
         if self._have_login_cookie():

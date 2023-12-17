@@ -13,7 +13,7 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass, config_entry, async_add_entities):
     coordinator = hass.data[KEY_POESWITCH][config_entry.entry_id]
 
-    entities = list()
+    entities = []
     for port_idx, _ in coordinator.ports.items():
         entities.append(ZyxelPoeSwitch(coordinator, port_idx))
     _LOGGER.debug(f'Configuring {len(entities)} switches')
@@ -22,16 +22,16 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class ZyxelPoeSwitch(CoordinatorEntity, SwitchEntity):
     def __init__(self, coordinator, port_idx):
         super().__init__(coordinator, context=port_idx)
-        self._attr_name = f"{coordinator._name} port{self.coordinator_context}"
+        self._attr_name = f"{coordinator.name} port{self.coordinator_context}"
         self._attr_is_on = self.coordinator.get_port_state(self.coordinator_context) == STATE_ON
-        self._attr_unique_id = f"{self.coordinator._host}_{self.coordinator_context}_poe_switch"
+        self._attr_unique_id = f"{self.coordinator.host}_{self.coordinator_context}_poe_switch"
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
         return DeviceInfo(
             identifiers={
-                (DOMAIN, self.coordinator._host)
+                (DOMAIN, self.coordinator.host)
             }
         )
 

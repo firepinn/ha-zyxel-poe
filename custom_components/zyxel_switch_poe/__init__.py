@@ -1,14 +1,16 @@
-from datetime import timedelta
-import logging
-import aiohttp
-import math
 import re
-import homeassistant.helpers.config_validation as cv
-import voluptuous as vol
+import math
+import logging
 import asyncio
+
 from random import random
+from datetime import timedelta
+
+import aiohttp
+import voluptuous as vol
 
 from homeassistant import config_entries
+import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.const import STATE_ON, STATE_OFF, CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_SCAN_INTERVAL, EVENT_HOMEASSISTANT_STOP
@@ -96,31 +98,31 @@ async def async_setup_entry(hass, entry):
     return True
 
 # Generate a random number
-def randomStr():
-    randomStrArr = ['0','1','2','3','4','5','6','7','8','9',
+def random_str():
+    random_str_arr = ['0','1','2','3','4','5','6','7','8','9',
                         'a','b','c','d','e','f','g','h','i','j','k','l','m',
                         'n','o','p','q','r','s','t','u','v','w','x','y','z',
                         'A','B','C','D','E','F','G','H','I','J','K','L','M',
                         'N','O','P','Q','R','S','T','U','V','W','X','Y','Z'
                         ]
-    index = math.floor(random() * len(randomStrArr))
+    index = math.floor(random() * len(random_str_arr))
 
-    return randomStrArr[index]
+    return random_str_arr[index]
 
 # Encrypt the string
 def encode(_input):
-    pwdStrArr = [*_input]
-    pwdFinalStr = ""
-    for i in range(len(pwdStrArr)+1):
-        if (i == len(pwdStrArr)):
-            pwdFinalStr += randomStr()
+    pwd_str_arr = [*_input]
+    pwd_final_str = ""
+    for i in range(len(pwd_str_arr)+1):
+        if i == len(pwd_str_arr):
+            pwd_final_str += random_str()
             break
-        else:
-            code = ord(pwdStrArr[i])
-            tempStr = chr(code - len(pwdStrArr))
-            pwdFinalStr += randomStr() + tempStr
 
-    return pwdFinalStr
+        code = ord(pwd_str_arr[i])
+        temp_str = chr(code - len(pwd_str_arr))
+        pwd_final_str += random_str() + temp_str
+
+    return pwd_final_str
 
 def int_to_bool_list(num):
     return [bool(num & (1<<n)) for n in range(4)]
@@ -143,46 +145,47 @@ class ZyxelCoordinator(DataUpdateCoordinator):
                 await self.logout()
             except:
                 pass
-    
+
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, on_hass_stop)
 
         self.ports = {}
+        self.device_info = {}
         self._client = async_create_clientsession(hass, cookie_jar=aiohttp.CookieJar(unsafe=True))
 
         _LOGGER.debug(f"Created coordinator with name: {name}")
-        self._name = name
-        self._host = host
+        self.name = name
+        self.host = host
         self._password = password
 
     async def get_system_info(self, dev_reg, entry):
         if not await self._login():
             return False
 
-        ok, text = await self.execute(METHOD_GET, f"http://{self._host}/system_data.js")
+        ok, text = await self.execute(METHOD_GET, f"http://{self.host}/system_data.js")
         if not ok:
             return False
 
         m = re.findall(r"sys_fmw_ver\s?=\s?'(.+)';", text)
         if not m or len(m) < 1:
-            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            _LOGGER.info(f"Unexpected response received system info retrieval: {text}")
             return False
         sw_version = m[0]
 
         m = re.findall(r"model_name\s?=\s?'(.+)';", text)
         if not m or len(m) < 1:
-            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            _LOGGER.info(f"Unexpected response received system info retrieval: {text}")
             return False
         model = m[0]
 
         m = re.findall(r"sys_MAC\s?=\s?'(.+)';", text)
         if not m or len(m) < 1:
-            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            _LOGGER.info(f"Unexpected response received system info retrieval: {text}")
             return False
         mac = m[0]
 
         m = re.findall(r"sys_dev_name\s?=\s?'(.+)';", text)
         if not m or len(m) < 1:
-            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            _LOGGER.info(f"Unexpected response received system info retrieval: {text}")
             return False
         name = m[0]
 
@@ -197,7 +200,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             config_entry_id=entry.entry_id,
             connections={(dr.CONNECTION_NETWORK_MAC, mac)},
             identifiers={
-                (DOMAIN, self._host)
+                (DOMAIN, self.host)
             },
             manufacturer=BRAND,
             name=name,
@@ -251,14 +254,13 @@ class ZyxelCoordinator(DataUpdateCoordinator):
                 return True, text
 
             except (asyncio.TimeoutError, aiohttp.ClientError) as ex:
-                _LOGGER.warn(f"Error during {method} {url}: {ex}")
-                pass
+                _LOGGER.info(f"Error during {method} {url}: {ex}")
 
         return False, None
 
     async def logout(self):
         _LOGGER.info("Logging out")
-        await self.execute(METHOD_GET, f"http://{self._host}/logout.html")
+        await self.execute(METHOD_GET, f"http://{self.host}/logout.html")
 
     def _have_login_cookie(self):
         if 'token' in [c.key for c in self._client.cookie_jar]:
@@ -281,16 +283,21 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             "password": encode(self._password),
         }
 
-        ok, text = await self.execute(METHOD_POST, f"http://{self._host}/login.cgi", data=login_data)
-        if ok and self._have_login_cookie():
+        ok, text = await self.execute(METHOD_POST, f"http://{self.host}/login.cgi", data=login_data)
+        if not ok:
+            _LOGGER.debug("Login failed")
+            return False
+
+        if self._have_login_cookie():
             _LOGGER.info("Logged in successfully")
             return True
-        if "logged in already" in text:
+
+        if text is not None and "logged in already" in text:
             _LOGGER.info("Other login session is still active")
         else:
-            _LOGGER.warn(f"Unknown error during login: {text}")
+            _LOGGER.info(f"Unknown error during login: {text}")
 
-        _LOGGER.debug(f"Login failed")
+        _LOGGER.debug("Login failed")
         return False
 
     async def _do_change_state(self):
@@ -308,12 +315,12 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             "g_port_speed3":0,
             "g_port_speed4":0
         }
-        ok, text = await self.execute(METHOD_POST, f"http://{self._host}/port_state_set.cgi", data=data)
+        ok, _ = await self.execute(METHOD_POST, f"http://{self.host}/port_state_set.cgi", data=data)
         if not ok:
-            _LOGGER.warn("Failed to change state")
+            _LOGGER.warning("Failed to change state")
             return False
 
-        _LOGGER.debug(f"State change successful")
+        _LOGGER.debug("State change successful")
         return True
 
     async def change_state(self):
@@ -329,13 +336,13 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         if not await self._login():
             return False
 
-        ok, text = await self.execute(METHOD_GET, f"http://{self._host}/port_state_data.js")
+        ok, text = await self.execute(METHOD_GET, f"http://{self.host}/port_state_data.js")
         if not ok:
             return False
 
         m = re.findall(r"portPoE\s?=\s?'(\d+)';", text)
         if not m or len(m) < 1:
-            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            _LOGGER.info(f"Unexpected response received during update state: {text}")
             return False
 
         switches = int_to_bool_list(int(m[0]))
@@ -351,13 +358,13 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         if not await self._login():
             return False
 
-        ok, text = await self.execute(METHOD_GET, f"http://{self._host}/poe_data.js")
+        ok, text = await self.execute(METHOD_GET, f"http://{self.host}/poe_data.js")
         if not ok:
             return False
 
         m = re.findall(r"port_power\s?=\s?\[([\s\d+\.,]+)\]", text)
         if not m or len(m) < 1:
-            _LOGGER.warn(f"Unexpected response received during update state: {text}")
+            _LOGGER.info(f"Unexpected response received during update state: {text}")
             return False
 
         powers = [x.strip() for x in m[0].split(',')]

@@ -89,8 +89,19 @@ async def async_setup_entry(hass, entry):
     await coordinator.async_config_entry_first_refresh()
 
     dev_reg = dr.async_get(hass)
-    await coordinator.get_system_info(dev_reg, entry)
+    device_info = await coordinator.get_system_info()
 
+    dev_reg.async_get_or_create(
+                config_entry_id=entry.entry_id,
+                connections={(dr.CONNECTION_NETWORK_MAC, device_info.mac)},
+                identifiers={
+                    (DOMAIN, self.host)
+                },
+                manufacturer=BRAND,
+                name=device_info.name,
+                model=device_info.model,
+                sw_version=device_info.sw_version
+            )
     hass.data.setdefault(KEY_POESWITCH, {})[entry.entry_id] = coordinator
     for platform in FORWARD_PLATFORMS:
         hass.async_create_task(hass.config_entries.async_forward_entry_setup(entry, platform))
@@ -157,7 +168,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         self.host = host
         self._password = password
 
-    async def get_system_info(self, dev_reg, entry):
+    async def get_system_info(self):
         if not await self._login():
             return False
 
@@ -189,26 +200,12 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             return False
         name = m[0]
 
-        self.device_info = {
+        return {
             name: name,
             mac: mac,
             sw_version: sw_version,
             model: model
         }
-
-        dev_reg.async_get_or_create(
-            config_entry_id=entry.entry_id,
-            connections={(dr.CONNECTION_NETWORK_MAC, mac)},
-            identifiers={
-                (DOMAIN, self.host)
-            },
-            manufacturer=BRAND,
-            name=name,
-            model=model,
-            sw_version=sw_version
-        )
-
-        return True
 
 
     def get_port_power(self, port):
@@ -396,3 +393,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Retry fetching state")
             await asyncio.sleep(2)
         raise UpdateFailed("Failed to refresh state")
+
+
+    async def _async_setup(self):
+        self.device_info = await self.get_system_info()

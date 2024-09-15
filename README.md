@@ -12,7 +12,7 @@ This plugin is inspired by https://github.com/lukas-hetzenecker/home-assistant-z
 Tested with: 
 
 - ZyXEL GS1200-5HP v2
-- ZyXel GS1200-8HP v2
+- ZyXEL GS1200-8HP v2
 
 
 ## What works now?

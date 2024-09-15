@@ -89,18 +89,18 @@ async def async_setup_entry(hass, entry):
     await coordinator.async_config_entry_first_refresh()
 
     dev_reg = dr.async_get(hass)
-    device_info = await coordinator.get_system_info()
+    #device_info = await coordinator.get_system_info()
 
     dev_reg.async_get_or_create(
                 config_entry_id=entry.entry_id,
-                connections={(dr.CONNECTION_NETWORK_MAC, device_info.mac)},
+                connections={(dr.CONNECTION_NETWORK_MAC, coordinator.device_info['mac'])},
                 identifiers={
                     (DOMAIN, self.host)
                 },
                 manufacturer=BRAND,
-                name=device_info.name,
-                model=device_info.model,
-                sw_version=device_info.sw_version
+                name=coordinator.device_info['name'],
+                model=coordinator.device_info['model'],
+                sw_version=coordinator.device_info['sw_version']
             )
     hass.data.setdefault(KEY_POESWITCH, {})[entry.entry_id] = coordinator
     for platform in FORWARD_PLATFORMS:
@@ -201,10 +201,10 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         name = m[0]
 
         return {
-            name: name,
-            mac: mac,
-            sw_version: sw_version,
-            model: model
+            'name': name,
+            'mac': mac,
+            'sw_version': sw_version,
+            'model': model
         }
 
 

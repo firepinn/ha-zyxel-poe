@@ -305,16 +305,29 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             return False
 
         switches = [True if o.get("state", STATE_ON) == STATE_ON else False for _, o in self.ports.items()]
+
         data = {
-            "g_port_state": 31,
             "g_port_flwcl": 0,
             "g_port_poe": bool_list_to_int(switches),
             "g_port_speed0": 0,
-            "g_port_speed1":0,
-            "g_port_speed2":0,
-            "g_port_speed3":0,
-            "g_port_speed4":0
+            "g_port_speed1": 0,
+            "g_port_speed2": 0,
+            "g_port_speed3": 0,
+            "g_port_speed4": 0
         }
+
+
+        if "GS1200-5HP v2" in self.device_info["model"]:
+            data["g_port_state"] = 31
+        elif "GS1200-8HP v2" in self.device_info["model"]:
+            data["g_port_state"] = 223            
+            data["g_port_speed5"] = 0
+            data["g_port_speed6"] = 0
+            data["g_port_speed7"] = 0
+        else:
+            _LOGGER.error(f"Unknown model: {self.device_info['model']}")
+            return False
+
         ok, _ = await self.execute(METHOD_POST, f"http://{self.host}/port_state_set.cgi", data=data)
         if not ok:
             _LOGGER.warning("Failed to change state")

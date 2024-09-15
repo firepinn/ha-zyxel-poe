@@ -95,7 +95,7 @@ async def async_setup_entry(hass, entry):
                 config_entry_id=entry.entry_id,
                 connections={(dr.CONNECTION_NETWORK_MAC, coordinator.device_info['mac'])},
                 identifiers={
-                    (DOMAIN, self.host)
+                    (DOMAIN, host)
                 },
                 manufacturer=BRAND,
                 name=coordinator.device_info['name'],

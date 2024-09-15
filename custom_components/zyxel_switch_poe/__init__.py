@@ -89,7 +89,6 @@ async def async_setup_entry(hass, entry):
     await coordinator.async_config_entry_first_refresh()
 
     dev_reg = dr.async_get(hass)
-    #device_info = await coordinator.get_system_info()
 
     dev_reg.async_get_or_create(
                 config_entry_id=entry.entry_id,

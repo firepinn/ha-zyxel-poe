@@ -316,7 +316,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         if "GS1200-5HP v2" in self.device_info["model"]:
             data["g_port_state"] = 31
         elif "GS1200-8HP v2" in self.device_info["model"]:
-            data["g_port_state"] = 223            
+            data["g_port_state"] = 255            
             data["g_port_speed5"] = 0
             data["g_port_speed6"] = 0
             data["g_port_speed7"] = 0

@@ -89,8 +89,18 @@ async def async_setup_entry(hass, entry):
     await coordinator.async_config_entry_first_refresh()
 
     dev_reg = dr.async_get(hass)
-    await coordinator.get_system_info(dev_reg, entry)
 
+    dev_reg.async_get_or_create(
+                config_entry_id=entry.entry_id,
+                connections={(dr.CONNECTION_NETWORK_MAC, coordinator.device_info['mac'])},
+                identifiers={
+                    (DOMAIN, host)
+                },
+                manufacturer=BRAND,
+                name=coordinator.device_info['name'],
+                model=coordinator.device_info['model'],
+                sw_version=coordinator.device_info['sw_version']
+            )
     hass.data.setdefault(KEY_POESWITCH, {})[entry.entry_id] = coordinator
     for platform in FORWARD_PLATFORMS:
         hass.async_create_task(hass.config_entries.async_forward_entry_setup(entry, platform))
@@ -157,7 +167,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         self.host = host
         self._password = password
 
-    async def get_system_info(self, dev_reg, entry):
+    async def get_system_info(self):
         if not await self._login():
             return False
 
@@ -189,26 +199,12 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             return False
         name = m[0]
 
-        self.device_info = {
-            name: name,
-            mac: mac,
-            sw_version: sw_version,
-            model: model
+        return {
+            'name': name,
+            'mac': mac,
+            'sw_version': sw_version,
+            'model': model
         }
-
-        dev_reg.async_get_or_create(
-            config_entry_id=entry.entry_id,
-            connections={(dr.CONNECTION_NETWORK_MAC, mac)},
-            identifiers={
-                (DOMAIN, self.host)
-            },
-            manufacturer=BRAND,
-            name=name,
-            model=model,
-            sw_version=sw_version
-        )
-
-        return True
 
 
     def get_port_power(self, port):
@@ -305,16 +301,29 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             return False
 
         switches = [True if o.get("state", STATE_ON) == STATE_ON else False for _, o in self.ports.items()]
+
         data = {
-            "g_port_state": 31,
             "g_port_flwcl": 0,
             "g_port_poe": bool_list_to_int(switches),
             "g_port_speed0": 0,
-            "g_port_speed1":0,
-            "g_port_speed2":0,
-            "g_port_speed3":0,
-            "g_port_speed4":0
+            "g_port_speed1": 0,
+            "g_port_speed2": 0,
+            "g_port_speed3": 0,
+            "g_port_speed4": 0
         }
+
+
+        if "GS1200-5HP v2" in self.device_info["model"]:
+            data["g_port_state"] = 31
+        elif "GS1200-8HP v2" in self.device_info["model"]:
+            data["g_port_state"] = 255            
+            data["g_port_speed5"] = 0
+            data["g_port_speed6"] = 0
+            data["g_port_speed7"] = 0
+        else:
+            _LOGGER.error(f"Unknown model: {self.device_info['model']}")
+            return False
+
         ok, _ = await self.execute(METHOD_POST, f"http://{self.host}/port_state_set.cgi", data=data)
         if not ok:
             _LOGGER.warning("Failed to change state")
@@ -383,3 +392,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Retry fetching state")
             await asyncio.sleep(2)
         raise UpdateFailed("Failed to refresh state")
+
+
+    async def _async_setup(self):
+        self.device_info = await self.get_system_info()

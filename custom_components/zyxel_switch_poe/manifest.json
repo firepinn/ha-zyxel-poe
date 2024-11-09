@@ -11,5 +11,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.comfirepinn/ha-zyxel-poe/issues",
   "requirements": [],
-  "version": "v0.3"
+  "version": "v0.4"
 }

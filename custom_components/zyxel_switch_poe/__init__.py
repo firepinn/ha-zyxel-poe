@@ -69,9 +69,20 @@ async def async_setup(hass, config):
 
 
 FORWARD_PLATFORMS = (
+    "binary_sensor",
     "sensor",
     "switch",
 )
+
+async def async_unload_entry(hass, entry):
+    for platform in FORWARD_PLATFORMS:
+        hass.add_job(
+            hass.config_entries.async_forward_entry_unload(entry, platform)
+        )
+    coordinator = hass.data[KEY_POESWITCH][entry.entry_id]
+    await coordinator.logout()
+    coordinator.cancel()
+    return True
 
 async def async_setup_entry(hass, entry):
     host = entry.data[CONF_HOST]
@@ -85,6 +96,15 @@ async def async_setup_entry(hass, entry):
 
     _LOGGER.debug(f"Using {interval}s update interval")
     coordinator = ZyxelCoordinator(hass, name, host, password, interval)
+
+    async def on_hass_stop(event):
+        """Close connection when hass stops."""
+        try:
+            await coordinator.logout()
+        except:
+            pass
+
+    coordinator.cancel = hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, on_hass_stop)
 
     await coordinator.async_config_entry_first_refresh()
 
@@ -102,8 +122,7 @@ async def async_setup_entry(hass, entry):
                 sw_version=coordinator.device_info['sw_version']
             )
     hass.data.setdefault(KEY_POESWITCH, {})[entry.entry_id] = coordinator
-    for platform in FORWARD_PLATFORMS:
-        hass.async_create_task(hass.config_entries.async_forward_entry_setup(entry, platform))
+    hass.async_create_task(hass.config_entries.async_forward_entry_setups(entry, FORWARD_PLATFORMS))
 
     return True
 
@@ -149,17 +168,9 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=interval),
         )
 
-        async def on_hass_stop(event):
-            """Close connection when hass stops."""
-            try:
-                await self.logout()
-            except:
-                pass
-
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, on_hass_stop)
-
         self.ports = {}
         self.device_info = {}
+        self.led_eco_state = STATE_OFF
         self._client = async_create_clientsession(hass, cookie_jar=aiohttp.CookieJar(unsafe=True))
 
         _LOGGER.debug(f"Created coordinator with name: {name}")
@@ -167,7 +178,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         self.host = host
         self._password = password
 
-    async def get_system_info(self):
+    async def _fetch_system_info(self):
         if not await self._login():
             return False
 
@@ -177,35 +188,60 @@ class ZyxelCoordinator(DataUpdateCoordinator):
 
         m = re.findall(r"sys_fmw_ver\s?=\s?'(.+)';", text)
         if not m or len(m) < 1:
-            _LOGGER.info(f"Unexpected response received system info retrieval: {text}")
+            _LOGGER.info(f"Unexpected response received system info retrieval of sw_version: {text}")
             return False
         sw_version = m[0]
 
         m = re.findall(r"model_name\s?=\s?'(.+)';", text)
         if not m or len(m) < 1:
-            _LOGGER.info(f"Unexpected response received system info retrieval: {text}")
+            _LOGGER.info(f"Unexpected response received system info retrieval of model: {text}")
             return False
         model = m[0]
 
         m = re.findall(r"sys_MAC\s?=\s?'(.+)';", text)
         if not m or len(m) < 1:
-            _LOGGER.info(f"Unexpected response received system info retrieval: {text}")
+            _LOGGER.info(f"Unexpected response received system info retrieval of MAC: {text}")
             return False
         mac = m[0]
 
         m = re.findall(r"sys_dev_name\s?=\s?'(.+)';", text)
         if not m or len(m) < 1:
-            _LOGGER.info(f"Unexpected response received system info retrieval: {text}")
+            _LOGGER.info(f"Unexpected response received system info retrieval of name: {text}")
             return False
         name = m[0]
 
-        return {
+        m = re.findall(r"sys_led_state\s?=\s?'(.+)';", text)
+        if not m or len(m) < 1:
+            _LOGGER.info(f"Unexpected response received system info retrieval of led state: {text}")
+            return False
+        sys_led_state = STATE_ON if m[0] == '1' else STATE_OFF
+
+        m = re.findall(r"system_uptime\s?=\s?'(.+)';", text)
+        if not m or len(m) < 1:
+            _LOGGER.info(f"Unexpected response received system info retrieval of uptime: {text}")
+            return False
+        sys_uptime = int(m[0])
+
+        self.device_info = {
             'name': name,
             'mac': mac,
             'sw_version': sw_version,
-            'model': model
+            'model': model,
+            'sys_led_state': sys_led_state,
+            'sys_uptime': sys_uptime
         }
 
+        _LOGGER.info(f"System info: {self.device_info}")
+        return True
+
+    def get_led_eco_switch_state(self):
+        return self.device_info.get('sys_led_state', STATE_OFF)
+
+    def set_led_eco_switch_state(self, state):
+        self.led_eco_state = state
+    
+    def get_uptime(self):
+        return self.device_info.get('sys_uptime', 0)
 
     def get_port_power(self, port):
         p = self.ports.get(port)
@@ -219,13 +255,29 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             return p.get('state', STATE_ON)
         return STATE_ON
 
+    def get_port_link_state(self, port):
+        p = self.ports.get(port)
+        if p:
+            return p.get('link_state', STATE_OFF)
+        return STATE_OFF
+
+    def get_port_link_speed(self, port):
+        p = self.ports.get(port)
+        if p:
+            return p.get('speed', '')
+        return ''
+
     def set_port_state(self, port, state):
         p = self.ports.get(port)
         if not p:
             self.ports[port] = {}
         self.ports[port]['state'] = state
 
+    def poe_ports(self):
+        return [p for p in self.ports.values() if p.get('is_poe_port', False)]
+
     async def execute(self, method, url, data=None):
+        _LOGGER.info(f"Executing {method} on {url} with data {data}")
         for i in range(MAX_HTTP_RETRIES):
             try:
                 if i != 0:
@@ -300,7 +352,14 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         if not await self._login():
             return False
 
-        switches = [True if o.get("state", STATE_ON) == STATE_ON else False for _, o in self.ports.items()]
+        if self.device_info.get("sys_led_state", STATE_OFF) != self.led_eco_state:
+            ok, _ = await self.execute(METHOD_POST, f"http://{self.host}/led_cfg.cgi", {"led_state_f": 0 if self.led_eco_state == STATE_OFF else 1})
+            if not ok:
+                _LOGGER.warning("Failed to change LED ECO state")
+                return False
+            return True
+
+        switches = [True if o.get("state", STATE_ON) == STATE_ON else False for o in self.poe_ports()]
 
         data = {
             "g_port_flwcl": 0,
@@ -312,11 +371,10 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             "g_port_speed4": 0
         }
 
-
         if "GS1200-5HP v2" in self.device_info["model"]:
             data["g_port_state"] = 31
         elif "GS1200-8HP v2" in self.device_info["model"]:
-            data["g_port_state"] = 255            
+            data["g_port_state"] = 255
             data["g_port_speed5"] = 0
             data["g_port_speed6"] = 0
             data["g_port_speed7"] = 0
@@ -326,7 +384,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
 
         ok, _ = await self.execute(METHOD_POST, f"http://{self.host}/port_state_set.cgi", data=data)
         if not ok:
-            _LOGGER.warning("Failed to change state")
+            _LOGGER.warning("Failed to change port state")
             return False
 
         _LOGGER.debug("State change successful")
@@ -340,6 +398,41 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             if i < MAX_APP_RETRIES:
                 await asyncio.sleep(2)
         raise UpdateFailed("Failed to change state")
+
+    async def _fetch_link_info(self):
+        if not await self._login():
+            return False
+
+        ok, text = await self.execute(METHOD_GET, f"http://{self.host}/link_data.js")
+        if not ok:
+            return False
+
+        m = re.findall(r"portstatus\s?=\s?\[(.+)\];", text)
+        if not m or len(m) < 1:
+            _LOGGER.info(f"Unexpected response received during port status retrieval: {text}")
+            return False
+
+        states = [x.strip().replace("'", "") for x in m[0].split(',')]
+        for i, state in enumerate(states):
+            if not self.ports.get(i):
+                self.ports[i] = {}
+            self.ports[i]["link_state"] = STATE_ON if state == 'Up' else STATE_OFF
+            _LOGGER.debug(f"Port {i} link state {self.ports[i]["link_state"]} ({state} {state == 'Up'})")
+
+
+        m = re.findall(r"speed\s?=\s?\[(.+)\];", text)
+        if not m or len(m) < 1:
+            _LOGGER.info(f"Unexpected response received during port speed retrieval: {text}")
+            return False
+
+        speeds = [x.strip().replace("'", "") for x in m[0].split(',')]
+        for i, speed in enumerate(speeds):
+            _LOGGER.debug(f"Port {i} link speed {speed}")
+            if not self.ports.get(i):
+                self.ports[i] = {}
+            self.ports[i]["speed"] = speed
+
+        return True
 
     async def _fetch_poe_port_state(self):
         if not await self._login():
@@ -382,12 +475,13 @@ class ZyxelCoordinator(DataUpdateCoordinator):
             if not self.ports.get(i):
                 self.ports[i] = {}
             self.ports[i]["power"] = float(val)
+            self.ports[i]["is_poe_port"] = True
         return True
 
     async def _async_update_data(self):
         _LOGGER.debug("Polling for updates")
         for _ in range(MAX_APP_RETRIES):
-            if await self._fetch_poe_port_state() and await self._fetch_poe_port_power():
+            if await self._fetch_poe_port_state() and await self._fetch_poe_port_power() and await self._fetch_system_info() and await self._fetch_link_info():
                 return
             _LOGGER.info("Retry fetching state")
             await asyncio.sleep(2)
@@ -395,4 +489,4 @@ class ZyxelCoordinator(DataUpdateCoordinator):
 
 
     async def _async_setup(self):
-        self.device_info = await self.get_system_info()
+        await self._fetch_system_info()

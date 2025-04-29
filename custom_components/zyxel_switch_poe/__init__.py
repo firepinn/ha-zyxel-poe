@@ -85,16 +85,16 @@ async def async_unload_entry(hass, entry):
     return True
 
 async def async_setup_entry(hass, entry):
-    host = entry.data[CONF_HOST]
-    name = entry.data[CONF_NAME]
+    host = entry.data.get(CONF_HOST)
+    name = entry.data.get(CONF_NAME)
 
     if not name or len(name) == 0:
         name = host
 
-    password = entry.data[CONF_PASSWORD]
-    interval = entry.data[CONF_SCAN_INTERVAL]
+    password = entry.data.get(CONF_PASSWORD)
+    interval = entry.data.get(CONF_SCAN_INTERVAL)
 
-    _LOGGER.debug(f"Using {interval}s update interval")
+    _LOGGER.debug(f"Using {interval}s update interval on {name}")
     coordinator = ZyxelCoordinator(hass, name, host, password, interval)
 
     async def on_hass_stop(event):
@@ -173,7 +173,7 @@ class ZyxelCoordinator(DataUpdateCoordinator):
         self.led_eco_state = STATE_OFF
         self._client = async_create_clientsession(hass, cookie_jar=aiohttp.CookieJar(unsafe=True))
 
-        _LOGGER.debug(f"Created coordinator with name: {name}")
+        _LOGGER.info(f"Created coordinator with name: {name}")
         self.name = name
         self.host = host
         self._password = password

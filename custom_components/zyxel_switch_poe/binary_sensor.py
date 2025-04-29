@@ -16,8 +16,6 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     async_add_entities(entities, update_before_add=False)
 
 class PortLinkStateEntity(CoordinatorEntity, BinarySensorEntity):
-    _attr_has_entity_name = True
-
     def __init__(self, coordinator, port_idx):
         super().__init__(coordinator, context=port_idx)
         self._attr_native_value = self.coordinator.get_port_link_state(self.coordinator_context) == STATE_ON
@@ -35,7 +33,7 @@ class PortLinkStateEntity(CoordinatorEntity, BinarySensorEntity):
 
     @property
     def name(self) -> str:
-        return f"{self.coordinator.name} port{self.coordinator_context} link state",
+        return f"{self.coordinator.name} port{self.coordinator_context} link state"
 
     @property
     def is_on(self) -> bool:

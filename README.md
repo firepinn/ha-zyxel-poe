@@ -25,7 +25,7 @@ The webserver on the Zyxel switch also seems to be somewhat unstable which means
 
 ## How to get it running
 
-1. Install this custom component through HACS or manually cloning the repo
+1. Install this custom component through HACS (add as a custom repository) or manually cloning the repo
 2. Go to Configuration > Integrations
 3. Add an integration, search for Zyxel POE switch, and click on it
 4. Follow the wizard
